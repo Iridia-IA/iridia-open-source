@@ -1,0 +1,96 @@
+#=========================================================================
+# Este archivo es lo unico que necesitas para levantar todo. 
+# Renombra el archivo `.env.template` como -> `.env`.
+# Configura las diferentes variables de ambiente.
+# Asegurate de estar en la ruta de la ubicación de este mismo archivo.
+# Corre un `docker-compose up -d`. Y listo.
+# ========================================================================
+
+# Definimos los volúmenes de Docker
+volumes:
+  flowise_volume:                                               # Volumen para el servicio Flowise
+  postgres_flowise_volume:                                      # Volumen para la base de datos PostgreSQL de Flowise
+  postgres_langfuse_volume:                                     # Volumen para la base de datos PostgreSQL de Langfuse
+
+# Definimos la red
+networks:
+    flowise_network:
+        driver: bridge                                          # Utilizamos el controlador de red tipo bridge
+
+# Definimos los servicios (Contenedores)
+services:
+    postgres_db_flowise:
+        image: postgres:16-alpine                               # Seteamos la imagen de docker que vamos a utilizar (Esta la trae de Docker Hub)
+        container_name: postgres_db_flowise                     # Nombre del contenedor
+        env_file: "./.env"                                      # Ubicación del archivo de ambiente
+        healthcheck:                                            # Configuración del Healthcheck
+          test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"] # Comando de Prueba
+          interval: 10s                                         # Intervalo
+          timeout: 5s                                           # Timeout
+          retries: 5                                            # Intentos
+        ports: 
+          - "${DATABASE_PORT}:${DATABASE_PORT}"                 # puerto_host:puerto_contenedor
+        networks:                                               # Asignamos la red
+          - flowise_network
+        volumes:                                                # Definimos los volumenes
+          - postgres_flowise_volume:${DB_VOLUME_PATH}           # volumen_host:volumen_contenedor
+        restart: unless-stopped                                 # Reinicio del contenedor siempre que se detenga (a no ser que el usuario lo detenga explícitamente)
+
+    postgres_db_langfuse:
+        image: postgres:16-alpine                               # Seteamos la imagen de docker que vamos a utilizar (Esta la trae de Docker Hub)
+        container_name: postgres_db_langfuse                    # Nombre del contenedor
+        env_file: "./postgres_langfuse.env"                     # Ubicación del archivo de ambiente
+        healthcheck:                                            # Configuración del Healthcheck
+          test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER_LANGFUSE -d $POSTGRES_DB_LANGFUSE -p 5433"] # Comando de Prueba
+          interval: 10s                                         # Intervalo
+          timeout: 5s                                           # Timeout
+          retries: 5                                            # Intentos
+        ports: 
+          - "5433:5433"                                         # puerto_host:puerto_contenedor
+        networks:                                               # Asignamos la red
+          - flowise_network
+        volumes:                                                # Definimos los volumenes
+          - postgres_langfuse_volume:${DB_VOLUME_PATH:-/var/lib/postgresql/data} # volumen_host:volumen_contenedor
+        restart: unless-stopped                                 # Reinicio del contenedor siempre que se detenga (a no ser que el usuario lo detenga explícitamente)
+        command: -p 5433                                        # Comando para cambiar el puerto en el que corre PostgreSQL en el contenedor
+
+    flowise:
+        image: flowiseai/flowise:1.8.2                          # Seteamos la imagen de docker que vamos a utilizar (Esta la trae de Docker Hub)
+        container_name: flowise                                 # Nombre del contenedor
+        env_file: "./.env"                                      # Ubicación del archivo de ambiente
+        hostname: flowise                                       # Nombre del host (contenedor)
+        healthcheck:                                            # Configuración del Healthcheck
+          test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${PORT}"] # Comando de Prueba
+          interval: 10s                                         # Intervalo
+          timeout: 5s                                           # Timeout
+          retries: 5                                            # Intentos
+        ports:
+            - "${PORT}:${PORT}"                                 # puerto_host:puerto_contenedor
+        volumes:                                                # Definimos los volumenes
+            - flowise_volume:${VOLUME_PATH}                     # volumen_host:volumen_contenedor
+        entrypoint: /bin/sh -c "sleep 3; flowise start"         # Comando/punto de entrada del contenedor
+        restart: always                                         # Reiniciar siempre
+        networks:                                               # Asignamos la red
+            - flowise_network
+        depends_on:                                             # Este contenedor depende de que la base de datos levante (Establecemos un orden de ejecución) 
+          postgres_db_flowise:
+            condition: service_healthy                          # Condicional. Si la base de datos no esta "sana" no va a correr el contenedor de flowise
+    
+    langfuse:
+        image: langfuse/langfuse:2                              # Seteamos la imagen de docker que vamos a utilizar (Esta la trae de Docker Hub)
+        container_name: langfuse                                # Nombre del contenedor
+        env_file: "./langfuse.env"                              # Ubicación del archivo de ambiente
+        healthcheck:                                            # Configuración del Healthcheck
+          test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${PORT}"] # Comando de Prueba
+          interval: 10s                                         # Intervalo
+          timeout: 5s                                           # Timeout
+          retries: 5                                            # Intentos
+        depends_on:                                             # Este contenedor depende de que los servicios flowise y postgres_db_langfuse levanten
+          postgres_db_langfuse:
+            condition: service_healthy                          # Condicional. Si la base de datos langfuse no esta "sana" no va a correr el contenedor de langfuse
+          flowise:
+            condition: service_healthy                          # Condicional. Si el servicio flowise no esta "sano" no va a correr el contenedor de langfuse
+        ports:
+          - "3004:3004"                                         # puerto_host:puerto_contenedor
+        networks:                                               # Asignamos la red
+            - flowise_network 
